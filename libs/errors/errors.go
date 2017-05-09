@@ -41,6 +41,11 @@ var (
 		RetNeedleCookie:      "needle cookie not match",
 		RetNeedleDeleted:     "needle deleted",
 		RetNeedleTooLarge:    "needle has no left free space",
+		RetNeedleHeaderSize:  "needle header size",
+		RetNeedleDataSize:    "needle data size",
+		RetNeedleFooterSize:  "needle footer size",
+		RetNeedlePaddingSize: "needle padding size",
+		RetNeedleFull:        "needle full",
 		// ring
 		RetRingEmpty: "index ring buffer empty",
 		RetRingFull:  "index ring buffer full",
@@ -58,7 +63,7 @@ var (
 		/* ========================= Store ========================= */
 		/* ========================= Directory ========================= */
 		// hbase
-		RetHbase: "hbase failed",
+		RetHBase: "hbase failed",
 		// id
 		RetIdNotAvailable: "generate id failed",
 		// store
@@ -66,5 +71,13 @@ var (
 		// zookeeper
 		RetZookeeperDataError: "zookeeper data error",
 		/* ========================= Directory ========================= */
+		/* ========================= Proxy ========================= */
+		// common
+		RetBucketNotExist: "bucket not exist",
+		RetAuthFailed:     "authorization failed",
+		RetUrlBad:         "bad url",
+		// upload
+		RetFileTooLarge: "file too large",
+		/* ========================= Proxy ========================= */
 	}
 )

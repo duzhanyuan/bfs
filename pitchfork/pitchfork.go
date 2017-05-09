@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bfs/libs/meta"
+	"bfs/pitchfork/conf"
+	myzk "bfs/pitchfork/zk"
 	"encoding/json"
-	"github.com/Terry-Mao/bfs/libs/meta"
 	log "github.com/golang/glog"
 	"github.com/samuel/go-zookeeper/zk"
 	"sort"
@@ -10,22 +12,25 @@ import (
 )
 
 const (
-	retrySleep = time.Second * 1
-	retryCount = 3
+	_retrySleep = time.Second * 1
+	_retryCount = 3
 )
 
 type Pitchfork struct {
 	Id     string
-	config *Config
-	zk     *Zookeeper
+	config *conf.Config
+	zk     *myzk.Zookeeper
 }
 
 // NewPitchfork
-func NewPitchfork(zk *Zookeeper, config *Config) (p *Pitchfork, err error) {
+func NewPitchfork(config *conf.Config) (p *Pitchfork, err error) {
 	var id string
 	p = &Pitchfork{}
 	p.config = config
-	p.zk = zk
+	if p.zk, err = myzk.NewZookeeper(config); err != nil {
+		log.Errorf("NewZookeeper() failed, Quit now")
+		return
+	}
 	if id, err = p.init(); err != nil {
 		log.Errorf("NewPitchfork failed error(%v)", err)
 		return
@@ -36,7 +41,7 @@ func NewPitchfork(zk *Zookeeper, config *Config) (p *Pitchfork, err error) {
 
 // init register temporary pitchfork node in the zookeeper.
 func (p *Pitchfork) init() (node string, err error) {
-	node, err = p.zk.NewNode(p.config.ZookeeperPitchforkRoot)
+	node, err = p.zk.NewNode(p.config.Zookeeper.PitchforkRoot)
 	return
 }
 
@@ -94,16 +99,16 @@ func (p *Pitchfork) Probe() {
 	for {
 		if stores, sev, err = p.watchStores(); err != nil {
 			log.Errorf("watchGetStores() called error(%v)", err)
-			time.Sleep(retrySleep)
+			time.Sleep(_retrySleep)
 			continue
 		}
 		if pitchforks, pev, err = p.watch(); err != nil {
 			log.Errorf("WatchGetPitchforks() called error(%v)", err)
-			time.Sleep(retrySleep)
+			time.Sleep(_retrySleep)
 			continue
 		}
 		if stores = p.divide(pitchforks, stores); err != nil || len(stores) == 0 {
-			time.Sleep(retrySleep)
+			time.Sleep(_retrySleep)
 			continue
 		}
 		stop = make(chan struct{})
@@ -114,11 +119,12 @@ func (p *Pitchfork) Probe() {
 		select {
 		case <-sev:
 			log.Infof("store nodes change, rebalance")
-			close(stop)
 		case <-pev:
 			log.Infof("pitchfork nodes change, rebalance")
-			close(stop)
+		case <-time.After(p.config.Store.RackCheckInterval.Duration):
+			log.Infof("pitchfork poll zk")
 		}
+		close(stop)
 	}
 
 	return
@@ -173,21 +179,21 @@ func (p *Pitchfork) checkHealth(store *meta.Store, stop chan struct{}) (err erro
 		case <-stop:
 			log.Infof("check_health job stop")
 			return
-		case <-time.After(p.config.GetInterval):
+		case <-time.After(p.config.Store.StoreCheckInterval.Duration):
 			break
 		}
 		status = store.Status
 		store.Status = meta.StoreStatusHealth
-		for i = 0; i < retryCount; i++ {
+		for i = 0; i < _retryCount; i++ {
 			if volumes, err = store.Info(); err == nil {
 				break
 			}
-			time.Sleep(retrySleep)
+			time.Sleep(_retrySleep)
 		}
 		if err == nil {
 			for _, volume = range volumes {
 				if volume.Block.LastErr != nil {
-					log.Infof("get store block.lastErr:%s   host:%s", volume.Block.LastErr, store.Stat)
+					log.Infof("get store block.lastErr:%s host:%s", volume.Block.LastErr, store.Stat)
 					store.Status = meta.StoreStatusFail
 					break
 				} else if volume.Block.Full() {
@@ -215,10 +221,9 @@ func (p *Pitchfork) checkHealth(store *meta.Store, stop chan struct{}) (err erro
 // checkNeedles check the store health.
 func (p *Pitchfork) checkNeedles(store *meta.Store, stop chan struct{}) (err error) {
 	var (
-		status, i int
-		needle    meta.Needle
-		volume    *meta.Volume
-		volumes   []*meta.Volume
+		status  int
+		volume  *meta.Volume
+		volumes []*meta.Volume
 	)
 	log.Infof("checkNeedles job start")
 	for {
@@ -226,7 +231,7 @@ func (p *Pitchfork) checkNeedles(store *meta.Store, stop chan struct{}) (err err
 		case <-stop:
 			log.Infof("checkNeedles job stop")
 			return
-		case <-time.After(p.config.HeadInterval):
+		case <-time.After(p.config.Store.NeedleCheckInterval.Duration):
 			break
 		}
 		if volumes, err = store.Info(); err != nil {
@@ -238,18 +243,9 @@ func (p *Pitchfork) checkNeedles(store *meta.Store, stop chan struct{}) (err err
 			if err = volume.Block.LastErr; err != nil {
 				break
 			}
-			for _, needle = range volume.CheckNeedles {
-				for i = 0; i < retryCount; i++ {
-					if err = store.Head(&needle, volume.Id); err == nil {
-						break
-					}
-					log.Errorf("head store failed, needle:%d host:%s", needle.Key, store.Stat)
-					time.Sleep(retrySleep)
-				}
-				if err != nil {
-					store.Status = meta.StoreStatusFail
-					goto failed
-				}
+			if err = store.Head(volume.Id); err != nil {
+				store.Status = meta.StoreStatusFail
+				goto failed
 			}
 		}
 	failed:

@@ -1,17 +1,21 @@
 package main
 
 import (
+	"bfs/libs/errors"
+	"bfs/libs/meta"
+	"bfs/store/conf"
+	myos "bfs/store/os"
+	"bfs/store/volume"
+	myzk "bfs/store/zk"
 	"fmt"
-	"github.com/Terry-Mao/bfs/libs/errors"
-	"github.com/Terry-Mao/bfs/store/needle"
-	myos "github.com/Terry-Mao/bfs/store/os"
 	log "github.com/golang/glog"
 	"io/ioutil"
 	"os"
-	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Store get all volume meta data from a index file. index contains volume id,
@@ -38,37 +42,39 @@ const (
 	volumeFreeId     = -1
 )
 
+var (
+	_compactSleep = time.Second * 10
+)
+
 // Store save volumes.
 type Store struct {
 	vf          *os.File
 	fvf         *os.File
 	FreeId      int32
-	bp          []sync.Pool       // buffer pool
-	np          []sync.Pool       // needle pool
-	Volumes     map[int32]*Volume // split volumes lock
-	FreeVolumes []*Volume
-	zk          *Zookeeper
-	conf        *Config
+	Volumes     map[int32]*volume.Volume // split volumes lock
+	FreeVolumes []*volume.Volume
+	zk          *myzk.Zookeeper
+	conf        *conf.Config
 	flock       sync.Mutex // protect FreeId & saveIndex
 	vlock       sync.Mutex // protect Volumes map
 }
 
 // NewStore
-func NewStore(zk *Zookeeper, c *Config) (s *Store, err error) {
+func NewStore(c *conf.Config) (s *Store, err error) {
 	s = &Store{}
-	s.zk = zk
+	if s.zk, err = myzk.NewZookeeper(c); err != nil {
+		return
+	}
 	s.conf = c
 	s.FreeId = 0
-	s.Volumes = make(map[int32]*Volume, c.StoreVolumeCache)
-	s.bp = make([]sync.Pool, c.BatchMaxNum+1)
-	s.np = make([]sync.Pool, c.BatchMaxNum+1)
-	if s.vf, err = os.OpenFile(c.VolumeIndex, os.O_RDWR|os.O_CREATE|myos.O_NOATIME, 0664); err != nil {
-		log.Errorf("os.OpenFile(\"%s\") error(%v)", c.VolumeIndex, err)
+	s.Volumes = make(map[int32]*volume.Volume)
+	if s.vf, err = os.OpenFile(c.Store.VolumeIndex, os.O_RDWR|os.O_CREATE|myos.O_NOATIME, 0664); err != nil {
+		log.Errorf("os.OpenFile(\"%s\") error(%v)", c.Store.VolumeIndex, err)
 		s.Close()
 		return nil, err
 	}
-	if s.fvf, err = os.OpenFile(c.FreeVolumeIndex, os.O_RDWR|os.O_CREATE|myos.O_NOATIME, 0664); err != nil {
-		log.Errorf("os.OpenFile(\"%s\") error(%v)", c.FreeVolumeIndex, err)
+	if s.fvf, err = os.OpenFile(c.Store.FreeVolumeIndex, os.O_RDWR|os.O_CREATE|myos.O_NOATIME, 0664); err != nil {
+		log.Errorf("os.OpenFile(\"%s\") error(%v)", c.Store.FreeVolumeIndex, err)
 		s.Close()
 		return nil, err
 	}
@@ -94,7 +100,7 @@ func (s *Store) parseFreeVolumeIndex() (err error) {
 		id    int32
 		bfile string
 		ifile string
-		v     *Volume
+		v     *volume.Volume
 		data  []byte
 		ids   []int32
 		lines []string
@@ -111,7 +117,7 @@ func (s *Store) parseFreeVolumeIndex() (err error) {
 	}
 	for i = 0; i < len(bfs); i++ {
 		id, bfile, ifile = ids[i], bfs[i], ifs[i]
-		if v, err = NewVolume(id, bfile, ifile, s.conf); err != nil {
+		if v, err = newVolume(id, bfile, ifile, s.conf); err != nil {
 			return
 		}
 		v.Close()
@@ -132,7 +138,7 @@ func (s *Store) parseVolumeIndex() (err error) {
 		id         int32
 		bfile      string
 		ifile      string
-		v          *Volume
+		v          *volume.Volume
 		data       []byte
 		lids, zids []int32
 		lines      []string
@@ -160,16 +166,16 @@ func (s *Store) parseVolumeIndex() (err error) {
 		if _, ok = s.Volumes[id]; ok {
 			continue
 		}
-		if v, err = NewVolume(id, bfile, ifile, s.conf); err != nil {
+		if v, err = newVolume(id, bfile, ifile, s.conf); err != nil {
 			return
 		}
 		s.Volumes[id] = v
 		if _, ok = zim[id]; !ok {
-			if err = s.zk.AddVolume(v); err != nil {
+			if err = s.zk.AddVolume(id, v.Meta()); err != nil {
 				return
 			}
 		} else {
-			if err = s.zk.SetVolume(v); err != nil {
+			if err = s.zk.SetVolume(id, v.Meta()); err != nil {
 				return
 			}
 		}
@@ -182,7 +188,7 @@ func (s *Store) parseVolumeIndex() (err error) {
 		}
 		// if not exists in local
 		if _, ok = lim[id]; !ok {
-			if v, err = NewVolume(id, bfile, ifile, s.conf); err != nil {
+			if v, err = newVolume(id, bfile, ifile, s.conf); err != nil {
 				return
 			}
 			s.Volumes[id] = v
@@ -232,21 +238,26 @@ func (s *Store) parseIndex(lines []string) (im map[int32]struct{}, ids []int32, 
 func (s *Store) saveFreeVolumeIndex() (err error) {
 	var (
 		tn, n int
-		v     *Volume
+		v     *volume.Volume
 	)
 	if _, err = s.fvf.Seek(0, os.SEEK_SET); err != nil {
+		log.Errorf("fvf.Seek() error(%v)", err)
 		return
 	}
 	for _, v = range s.FreeVolumes {
 		if n, err = s.fvf.WriteString(fmt.Sprintf("%s\n", string(v.Meta()))); err != nil {
+			log.Errorf("fvf.WriteString() error(%v)", err)
 			return
 		}
 		tn += n
 	}
 	if err = s.fvf.Sync(); err != nil {
+		log.Errorf("fvf.saveFreeVolumeIndex Sync() error(%v)", err)
 		return
 	}
-	err = os.Truncate(s.conf.FreeVolumeIndex, int64(tn))
+	if err = os.Truncate(s.conf.Store.FreeVolumeIndex, int64(tn)); err != nil {
+		log.Errorf("os.Truncate() error(%v)", err)
+	}
 	return
 }
 
@@ -254,70 +265,63 @@ func (s *Store) saveFreeVolumeIndex() (err error) {
 func (s *Store) saveVolumeIndex() (err error) {
 	var (
 		tn, n int
-		v     *Volume
+		v     *volume.Volume
 	)
 	if _, err = s.vf.Seek(0, os.SEEK_SET); err != nil {
+		log.Errorf("vf.Seek() error(%v)", err)
 		return
 	}
 	for _, v = range s.Volumes {
 		if n, err = s.vf.WriteString(fmt.Sprintf("%s\n", string(v.Meta()))); err != nil {
+			log.Errorf("vf.WriteString() error(%v)", err)
 			return
 		}
 		tn += n
 	}
 	if err = s.vf.Sync(); err != nil {
+		log.Errorf("vf.Sync() error(%v)", err)
 		return
 	}
-	err = os.Truncate(s.conf.VolumeIndex, int64(tn))
+	if err = os.Truncate(s.conf.Store.VolumeIndex, int64(tn)); err != nil {
+		log.Errorf("os.Truncate() error(%v)", err)
+	}
 	return
 }
 
-// Needle get a needle from sync.Pool.
-func (s *Store) Needle(n int) (ns []needle.Needle) {
-	var i interface{}
-	if i = s.np[n].Get(); i != nil {
-		ns = i.([]needle.Needle)
+// SetZookeeper set zookeeper store meta.
+func (s *Store) SetZookeeper() (err error) {
+	// update zk store meta
+	if err = s.zk.SetStore(&meta.Store{
+		Stat:  s.conf.StatListen,
+		Admin: s.conf.AdminListen,
+		Api:   s.conf.ApiListen,
+	}); err != nil {
+		log.Errorf("zk.SetStore() error(%v)", err)
 		return
 	}
-	return make([]needle.Needle, n)
-}
-
-// FreeNeedle free the needle to pool.
-func (s *Store) FreeNeedle(n int, ns []needle.Needle) {
-	s.np[n].Put(ns)
-}
-
-// Buffer get a buffer from sync.Pool.
-func (s *Store) Buffer(n int) (d []byte) {
-	var di interface{}
-	if di = s.bp[n].Get(); di != nil {
-		d = di.([]byte)
+	// update zk root
+	if err = s.zk.SetRoot(); err != nil {
+		log.Errorf("zk.SetRoot() error(%v)", err)
 		return
 	}
-	d = make([]byte, n*s.conf.NeedleMaxSize)
 	return
-}
-
-// FreeBuffer free the buffer to pool.
-func (s *Store) FreeBuffer(n int, d []byte) {
-	s.bp[n].Put(d)
 }
 
 // freeFile get volume block & index free file name.
 func (s *Store) freeFile(id int32, bdir, idir string) (bfile, ifile string) {
 	var file = fmt.Sprintf("%s%d", freeVolumePrefix, id)
-	bfile = path.Join(bdir, file)
+	bfile = filepath.Join(bdir, file)
 	file = fmt.Sprintf("%s%d%s", freeVolumePrefix, id, volumeIndexExt)
-	ifile = path.Join(idir, file)
+	ifile = filepath.Join(idir, file)
 	return
 }
 
 // file get volume block & index file name.
 func (s *Store) file(id int32, bdir, idir string, i int) (bfile, ifile string) {
 	var file = fmt.Sprintf("%d_%d", id, i)
-	bfile = path.Join(bdir, file)
+	bfile = filepath.Join(bdir, file)
 	file = fmt.Sprintf("%d_%d%s", id, i, volumeIndexExt)
-	ifile = path.Join(idir, file)
+	ifile = filepath.Join(idir, file)
 	return
 }
 
@@ -325,7 +329,7 @@ func (s *Store) file(id int32, bdir, idir string, i int) (bfile, ifile string) {
 func (s *Store) fileFreeId(file string) (id int32) {
 	var (
 		fid    int64
-		fidStr = strings.Replace(path.Base(file), freeVolumePrefix, "", -1)
+		fidStr = strings.Replace(filepath.Base(file), freeVolumePrefix, "", -1)
 	)
 	fid, _ = strconv.ParseInt(fidStr, 10, 32)
 	id = int32(fid)
@@ -337,13 +341,19 @@ func (s *Store) AddFreeVolume(n int, bdir, idir string) (sn int, err error) {
 	var (
 		i            int
 		bfile, ifile string
-		v            *Volume
+		v            *volume.Volume
 	)
 	s.flock.Lock()
 	for i = 0; i < n; i++ {
 		s.FreeId++
 		bfile, ifile = s.freeFile(s.FreeId, bdir, idir)
-		if v, err = NewVolume(volumeFreeId, bfile, ifile, s.conf); err != nil {
+		if myos.Exist(bfile) || myos.Exist(ifile) {
+			continue
+		}
+		if v, err = newVolume(volumeFreeId, bfile, ifile, s.conf); err != nil {
+			// if no free space, delete the file
+			os.Remove(bfile)
+			os.Remove(ifile)
 			break
 		}
 		v.Close()
@@ -356,7 +366,7 @@ func (s *Store) AddFreeVolume(n int, bdir, idir string) (sn int, err error) {
 }
 
 // freeVolume get a free volume.
-func (s *Store) freeVolume(id int32) (v *Volume, err error) {
+func (s *Store) freeVolume(id int32) (v *volume.Volume, err error) {
 	var (
 		i                                        int
 		bfile, nbfile, ifile, nifile, bdir, idir string
@@ -371,7 +381,7 @@ func (s *Store) freeVolume(id int32) (v *Volume, err error) {
 	s.FreeVolumes = s.FreeVolumes[1:]
 	v.Id = id
 	bfile, ifile = v.Block.File, v.Indexer.File
-	bdir, idir = path.Dir(bfile), path.Dir(ifile)
+	bdir, idir = filepath.Dir(bfile), filepath.Dir(ifile)
 	for {
 		nbfile, nifile = s.file(id, bdir, idir, i)
 		if !myos.Exist(nbfile) && !myos.Exist(nifile) {
@@ -402,11 +412,11 @@ func (s *Store) freeVolume(id int32) (v *Volume, err error) {
 }
 
 // addVolume atomic add volume by copy-on-write.
-func (s *Store) addVolume(id int32, nv *Volume) {
+func (s *Store) addVolume(id int32, nv *volume.Volume) {
 	var (
 		vid     int32
-		v       *Volume
-		volumes = make(map[int32]*Volume, len(s.Volumes)+1)
+		v       *volume.Volume
+		volumes = make(map[int32]*volume.Volume, len(s.Volumes)+1)
 	)
 	for vid, v = range s.Volumes {
 		volumes[vid] = v
@@ -417,8 +427,8 @@ func (s *Store) addVolume(id int32, nv *Volume) {
 }
 
 // AddVolume add a new volume.
-func (s *Store) AddVolume(id int32) (v *Volume, err error) {
-	var ov *Volume
+func (s *Store) AddVolume(id int32) (v *volume.Volume, err error) {
+	var ov *volume.Volume
 	// try check exists
 	if ov = s.Volumes[id]; ov != nil {
 		return nil, errors.ErrVolumeExist
@@ -431,12 +441,18 @@ func (s *Store) AddVolume(id int32) (v *Volume, err error) {
 	if ov = s.Volumes[id]; ov == nil {
 		s.addVolume(id, v)
 		if err = s.saveVolumeIndex(); err == nil {
-			err = s.zk.AddVolume(v)
+			err = s.zk.AddVolume(id, v.Meta())
+		}
+		if err != nil {
+			log.Errorf("add volume: %d error(%v), local index or zookeeper index may save failed", id, err)
 		}
 	} else {
 		err = errors.ErrVolumeExist
 	}
 	s.vlock.Unlock()
+	if err == errors.ErrVolumeExist {
+		v.Destroy()
+	}
 	return
 }
 
@@ -444,8 +460,8 @@ func (s *Store) AddVolume(id int32) (v *Volume, err error) {
 func (s *Store) delVolume(id int32) {
 	var (
 		vid     int32
-		v       *Volume
-		volumes = make(map[int32]*Volume, len(s.Volumes)-1)
+		v       *volume.Volume
+		volumes = make(map[int32]*volume.Volume, len(s.Volumes)-1)
 	)
 	for vid, v = range s.Volumes {
 		volumes[vid] = v
@@ -457,13 +473,16 @@ func (s *Store) delVolume(id int32) {
 
 // DelVolume del the volume by volume id.
 func (s *Store) DelVolume(id int32) (err error) {
-	var v *Volume
+	var v *volume.Volume
 	s.vlock.Lock()
 	if v = s.Volumes[id]; v != nil {
 		if !v.Compact {
 			s.delVolume(id)
 			if err = s.saveVolumeIndex(); err == nil {
 				err = s.zk.DelVolume(id)
+			}
+			if err != nil {
+				log.Errorf("del volume: %d error(%v), local index or zookeeper index may save failed", id, err)
 			}
 		} else {
 			err = errors.ErrVolumeInCompact
@@ -472,24 +491,29 @@ func (s *Store) DelVolume(id int32) (err error) {
 		err = errors.ErrVolumeNotExist
 	}
 	s.vlock.Unlock()
-	if err == nil {
-		v.Close()
+	// if succced or not meta data saved error, close volume
+	if err == nil || (err != errors.ErrVolumeInCompact &&
+		err != errors.ErrVolumeNotExist) {
+		v.Destroy()
 	}
 	return
 }
 
 // BulkVolume copy a super block from another store server add to this server.
 func (s *Store) BulkVolume(id int32, bfile, ifile string) (err error) {
-	var v, nv *Volume
+	var v, nv *volume.Volume
 	// recovery new block
-	if nv, err = NewVolume(id, bfile, ifile, s.conf); err != nil {
+	if nv, err = newVolume(id, bfile, ifile, s.conf); err != nil {
 		return
 	}
 	s.vlock.Lock()
 	if v = s.Volumes[id]; v == nil {
 		s.addVolume(id, nv)
 		if err = s.saveVolumeIndex(); err == nil {
-			err = s.zk.AddVolume(nv)
+			err = s.zk.AddVolume(id, nv.Meta())
+		}
+		if err != nil {
+			log.Errorf("bulk volume: %d error(%v), local index or zookeeper index may save failed", id, err)
 		}
 	} else {
 		err = errors.ErrVolumeExist
@@ -500,7 +524,10 @@ func (s *Store) BulkVolume(id int32, bfile, ifile string) (err error) {
 
 // CompactVolume compact a super block to another file.
 func (s *Store) CompactVolume(id int32) (err error) {
-	var v, nv *Volume
+	var (
+		v, nv      *volume.Volume
+		bdir, idir string
+	)
 	// try check volume
 	if v = s.Volumes[id]; v != nil {
 		if v.Compact {
@@ -513,28 +540,39 @@ func (s *Store) CompactVolume(id int32) (err error) {
 	if nv, err = s.freeVolume(id); err != nil {
 		return
 	}
+	log.Infof("start compact volume: (%d) %s to %s", id, v.Block.File, nv.Block.File)
 	// no lock here, Compact is no side-effect
 	if err = v.StartCompact(nv); err != nil {
+		nv.Destroy()
 		v.StopCompact(nil)
 		return
 	}
 	s.vlock.Lock()
 	if v = s.Volumes[id]; v != nil {
+		log.Infof("stop compact volume: (%d) %s to %s", id, v.Block.File, nv.Block.File)
 		if err = v.StopCompact(nv); err == nil {
 			// WARN no need update volumes map, use same object, only update
 			// zookeeper the local index cause the block and index file changed.
 			if err = s.saveVolumeIndex(); err == nil {
-				err = s.zk.SetVolume(v)
+				err = s.zk.SetVolume(id, v.Meta())
+			}
+			if err != nil {
+				log.Errorf("compact volume: %d error(%v), local index or zookeeper index may save failed", id, err)
 			}
 		}
 	} else {
+		// never happen
 		err = errors.ErrVolumeExist
+		log.Errorf("compact volume: %d not exist(may bug)", id)
 	}
 	s.vlock.Unlock()
+	// WARN if failed, nv is free volume, if succeed nv replace with v.
+	// Sleep untill anyone had old volume variables all processed.
+	time.Sleep(_compactSleep)
+	nv.Destroy()
 	if err == nil {
-		// nv now has old block/index
-		nv.Close()
-		nv.Destroy()
+		bdir, idir = filepath.Dir(nv.Block.File), filepath.Dir(nv.Indexer.File)
+		_, err = s.AddFreeVolume(1, bdir, idir)
 	}
 	return
 }
@@ -543,20 +581,27 @@ func (s *Store) CompactVolume(id int32) (err error) {
 // WARN the global variable store must first set nil and reject any other
 // requests then safty close.
 func (s *Store) Close() {
-	var v *Volume
+	log.Info("store close")
+	var v *volume.Volume
 	if s.vf != nil {
 		s.vf.Close()
 	}
 	if s.fvf != nil {
 		s.fvf.Close()
 	}
-	if s.Volumes != nil {
-		for _, v = range s.Volumes {
-			v.Close()
-		}
+	for _, v = range s.Volumes {
+		log.Infof("volume[%d] close", v.Id)
+		v.Close()
 	}
 	if s.zk != nil {
 		s.zk.Close()
+	}
+	return
+}
+
+func newVolume(id int32, bfile, ifile string, c *conf.Config) (v *volume.Volume, err error) {
+	if v, err = volume.NewVolume(id, bfile, ifile, c); err != nil {
+		log.Errorf("newVolume(%d, %s, %s) error(%v)", id, bfile, ifile, err)
 	}
 	return
 }

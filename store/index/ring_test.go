@@ -1,7 +1,7 @@
 package index
 
 import (
-	"github.com/Terry-Mao/bfs/libs/errors"
+	"bfs/libs/errors"
 	"testing"
 )
 

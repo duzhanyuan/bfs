@@ -1,7 +1,7 @@
 package hbase
 
 import (
-	"github.com/Terry-Mao/bfs/libs/meta"
+	"bfs/libs/meta"
 	"math/rand"
 	"testing"
 	"time"

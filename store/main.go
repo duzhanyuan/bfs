@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bfs/store/conf"
 	"flag"
 	log "github.com/golang/glog"
 )
@@ -10,52 +11,34 @@ var (
 )
 
 func init() {
-	flag.StringVar(&configFile, "c", "./store.conf", " set store config file path")
+	flag.StringVar(&configFile, "c", "./store.toml", " set store config file path")
 }
 
 func main() {
 	var (
-		c   *Config
-		z   *Zookeeper
-		s   *Store
-		err error
+		c      *conf.Config
+		store  *Store
+		server *Server
+		err    error
 	)
 	flag.Parse()
 	defer log.Flush()
 	log.Infof("bfs store[%s] start", Ver)
-	if c, err = NewConfig(configFile); err != nil {
+	defer log.Infof("bfs store[%s] stop", Ver)
+	if c, err = conf.NewConfig(configFile); err != nil {
 		log.Errorf("NewConfig(\"%s\") error(%v)", configFile, err)
 		return
 	}
-	log.Infof("init zookeeper...")
-	if z, err = NewZookeeper(c.ZookeeperAddrs, c.ZookeeperTimeout, c.ZookeeperRoot, c.Rack, c.ServerId); err != nil {
+	if store, err = NewStore(c); err != nil {
 		return
 	}
-	log.Infof("init store...")
-	if s, err = NewStore(z, c); err != nil {
+	if server, err = NewServer(store, c); err != nil {
 		return
 	}
-	log.Infof("init http stat...")
-	StartStat(c.StatListen, s)
-	log.Infof("init http api...")
-	StartApi(c.ApiListen, s, c)
-	log.Infof("init http admin...")
-	StartAdmin(c.AdminListen, s)
-	if c.PprofEnable {
-		log.Infof("init http pprof...")
-		StartPprof(c.PprofListen)
-	}
-	// update zk store meta
-	if err = z.SetStore(c.ServerId, c.Rack, c.StatListen, c.AdminListen, c.ApiListen); err != nil {
-		log.Errorf("zk.SetStore() error(%v)", err)
-		return
-	}
-	// update zk root
-	if err = z.SetRoot(); err != nil {
-		log.Errorf("zk.SetRoot() error(%v)", err)
+	if err = store.SetZookeeper(); err != nil {
 		return
 	}
 	log.Infof("wait signal...")
-	StartSignal()
+	StartSignal(store, server)
 	return
 }

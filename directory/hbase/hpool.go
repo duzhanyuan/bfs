@@ -1,78 +1,40 @@
 package hbase
 
 import (
+	"bfs/directory/conf"
+	"bfs/directory/hbase/hbasethrift"
 	"git.apache.org/thrift.git/lib/go/thrift"
-	"github.com/Terry-Mao/bfs/directory/hbase/hbasethrift"
 	log "github.com/golang/glog"
-	"time"
 )
 
 var (
 	hbasePool *Pool
+	config    *conf.Config
 )
 
-func Init(hbaseAddr string, hbaseTimeout time.Duration, hbaseMaxIdle, hbaseMaxActive int) error {
+func Init(config *conf.Config) error {
+	config = config
 	// init hbase thrift pool
-	hbasePool = New(func() (c *HbaseConn, err error) {
+	hbasePool = New(func() (c *hbasethrift.THBaseServiceClient, err error) {
 		var trans thrift.TTransport
-		trans, err = thrift.NewTSocketTimeout(hbaseAddr, hbaseTimeout)
-		if err != nil {
+		if trans, err = thrift.NewTSocketTimeout(config.HBase.Addr, config.HBase.Timeout.Duration); err != nil {
 			log.Error("thrift.NewTSocketTimeout error(%v)", err)
 			return
 		}
 		trans = thrift.NewTFramedTransport(trans)
-		c = new(HbaseConn)
-		c.conn = hbasethrift.NewTHBaseServiceClientFactory(trans, thrift.NewTBinaryProtocolFactoryDefault())
+		c = hbasethrift.NewTHBaseServiceClientFactory(trans, thrift.NewTBinaryProtocolFactoryDefault())
 		if err = trans.Open(); err != nil {
 			log.Error("trans.Open error(%v)", err)
-			return
-		}
-		c.tput.ColumnValues = []*hbasethrift.TColumnValue{
-			// vid
-			&hbasethrift.TColumnValue{
-				Family:    familyBasic,
-				Qualifier: columnVid,
-				Value:     c.vbuf[:],
-			},
-			// cookie
-			&hbasethrift.TColumnValue{
-				Family:    familyBasic,
-				Qualifier: columnCookie,
-				Value:     c.cbuf[:],
-			},
-			// insert_time
-			&hbasethrift.TColumnValue{
-				Family:    familyBasic,
-				Qualifier: columnInsertTime,
-				Value:     c.ibuf[:],
-			},
-		}
-		c.tdel.Columns = []*hbasethrift.TColumn{
-			// vid
-			&hbasethrift.TColumn{
-				Family:    familyBasic,
-				Qualifier: columnVid,
-			},
-			// cookie
-			&hbasethrift.TColumn{
-				Family:    familyBasic,
-				Qualifier: columnCookie,
-			},
-			// insert_time
-			&hbasethrift.TColumn{
-				Family:    familyBasic,
-				Qualifier: columnInsertTime,
-			},
 		}
 		return
-	}, func(c *HbaseConn) error {
-		client := c.conn
-		if client != nil && client.Transport != nil {
-			client.Transport.Close()
+	}, func(c *hbasethrift.THBaseServiceClient) error {
+		if c != nil && c.Transport != nil {
+			c.Transport.Close()
 		}
 		return nil
-	}, hbaseMaxIdle)
-	hbasePool.MaxActive = hbaseMaxActive
+	}, config.HBase.MaxIdle)
+	hbasePool.MaxActive = config.HBase.MaxActive
+	hbasePool.IdleTimeout = config.HBase.LvsTimeout.Duration
 	return nil
 }
 

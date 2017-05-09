@@ -1,6 +1,7 @@
 package hbase
 
 import (
+	"bfs/directory/hbase/hbasethrift"
 	"container/list"
 	"errors"
 	"sync"
@@ -87,17 +88,17 @@ var ErrPoolClosed = errors.New("pool: get on closed pool")
 type Pool struct {
 
 	// Dial is an application supplied function for creating new connections.
-	Dial func() (*HbaseConn, error)
+	Dial func() (*hbasethrift.THBaseServiceClient, error)
 
 	// Close is an application supplied functoin for closeing connections.
-	Close func(c *HbaseConn) error
+	Close func(c *hbasethrift.THBaseServiceClient) error
 
 	// TestOnBorrow is an optional application supplied function for checking
 	// the health of an idle connection before the connection is used again by
 	// the application. Argument t is the time that the connection was returned
 	// to the pool. If the function returns an error, then the connection is
 	// closed.
-	TestOnBorrow func(c *HbaseConn, t time.Time) error
+	TestOnBorrow func(c *hbasethrift.THBaseServiceClient, t time.Time) error
 
 	// Maximum number of idle connections in the pool.
 	MaxIdle int
@@ -121,21 +122,20 @@ type Pool struct {
 }
 
 type idleConn struct {
-	c *HbaseConn
+	c *hbasethrift.THBaseServiceClient
 	t time.Time
 }
 
 // New creates a new pool. This function is deprecated. Applications should
 // initialize the Pool fields directly as shown in example.
-func New(dialFn func() (*HbaseConn, error), closeFn func(c *HbaseConn) error,
-	maxIdle int) *Pool {
+func New(dialFn func() (*hbasethrift.THBaseServiceClient, error), closeFn func(c *hbasethrift.THBaseServiceClient) error, maxIdle int) *Pool {
 	return &Pool{Dial: dialFn, Close: closeFn, MaxIdle: maxIdle}
 }
 
 // Get gets a connection. The application must close the returned connection.
 // This method always returns a valid connection so that applications can defer
 // error handling to the first use of the connection.
-func (p *Pool) Get() (*HbaseConn, error) {
+func (p *Pool) Get() (*hbasethrift.THBaseServiceClient, error) {
 	p.mu.Lock()
 	// if closed
 	if p.closed {
@@ -198,7 +198,7 @@ func (p *Pool) Get() (*HbaseConn, error) {
 }
 
 // Put adds conn back to the pool, use forceClose to close the connection forcely
-func (p *Pool) Put(c *HbaseConn, forceClose bool) error {
+func (p *Pool) Put(c *hbasethrift.THBaseServiceClient, forceClose bool) error {
 	if !forceClose {
 		p.mu.Lock()
 		if !p.closed {

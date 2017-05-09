@@ -1,9 +1,72 @@
 package needle
 
 import (
+	"bufio"
 	"bytes"
+	"hash/crc32"
 	"testing"
 )
+
+func TestNeedle(t *testing.T) {
+	var (
+		err       error
+		n, tn     *Needle
+		br        *bufio.Reader
+		data1     = []byte("tes1")
+		checksum1 = crc32.Update(0, _crc32Table, data1)
+		data2     = []byte("tes2")
+		checksum2 = crc32.Update(0, _crc32Table, data2)
+		buf       = &bytes.Buffer{}
+	)
+	// WriteFrom
+	if _, err = buf.Write(data1); err != nil {
+		t.Error(err)
+		t.FailNow()
+	}
+	n = NewWriter(3, 3, 4)
+	defer n.Close()
+	if err = n.ReadFrom(buf); err != nil {
+		t.Error(err)
+		t.FailNow()
+	}
+	t.Log(n)
+	tn = new(Needle)
+	tn.buffer = n.Buffer()
+	// Parse
+	if err = tn.Parse(); err != nil {
+		t.Error(err)
+		t.FailNow()
+	}
+	t.Log(n)
+	compareNeedle(t, tn, 3, 3, data1, FlagOK, checksum1)
+	buf.Write(data2)
+	n = NewWriter(4, 4, 4)
+	defer n.Close()
+	if err = n.ReadFrom(buf); err != nil {
+		t.Error(err)
+		t.FailNow()
+	}
+	tn = new(Needle)
+	tn.buffer = n.Buffer()
+	if err = tn.Parse(); err != nil {
+		t.Error(err)
+		t.FailNow()
+	}
+	compareNeedle(t, tn, 4, 4, data2, FlagOK, checksum2)
+	// ParseFrom
+	if _, err = buf.Write(n.Buffer()); err != nil {
+		t.Error(err)
+		t.FailNow()
+	}
+	br = bufio.NewReader(buf)
+	tn = new(Needle)
+	if err = tn.ParseFrom(br); err != nil {
+		t.Error(err)
+		t.FailNow()
+	}
+	t.Log(tn)
+	compareNeedle(t, tn, 4, 4, data2, FlagOK, checksum2)
+}
 
 func TestAlign(t *testing.T) {
 	var i, m int32
@@ -101,40 +164,8 @@ func TestBlockOffset(t *testing.T) {
 	}
 }
 
-func TestNeedle(t *testing.T) {
-	var (
-		err  error
-		n    = &Needle{}
-		data = []byte("test")
-		buf  = make([]byte, 40)
-	)
-	n.Init(1, 1, data)
-	n.Write(buf)
-	if err = n.ParseHeader(buf[:HeaderSize]); err != nil {
-		t.Errorf("ParseHeader() error(%v)", err)
-		t.FailNow()
-	}
-	if err = n.ParseFooter(buf[HeaderSize:]); err != nil {
-		t.Errorf("ParseData() error(%v)", err)
-		t.FailNow()
-	}
-	if n.Cookie != 1 || n.Key != 1 || n.Size != 4 || !bytes.Equal(n.Data, data) || n.Flag != FlagOK || n.PaddingSize != 7 {
-		t.Error("Parse()")
-		t.FailNow()
-	}
-	n.Init(2, 2, data)
-	n.WriteHeader(buf)
-	n.WriteFooter(buf[HeaderSize:], true)
-	if err = n.ParseHeader(buf[:HeaderSize]); err != nil {
-		t.Errorf("ParseHeader() error(%v)", err)
-		t.FailNow()
-	}
-	if err = n.ParseFooter(buf[HeaderSize:]); err != nil {
-		t.Errorf("ParseData() error(%v)", err)
-		t.FailNow()
-	}
-	if n.Cookie != 2 || n.Key != 2 || n.Size != 4 || !bytes.Equal(n.Data, data) || n.Flag != FlagOK || n.PaddingSize != 7 {
-		t.Error("Parse() error")
+func TestSize(t *testing.T) {
+	if Size(4) != 40 {
 		t.FailNow()
 	}
 }

@@ -1,42 +1,15 @@
 package main
 
 import (
+	"bfs/libs/meta"
 	"encoding/json"
 	log "github.com/golang/glog"
 	"net/http"
 	"time"
 )
 
-// KeyCookie one file : key and cookie
-type KeyCookie struct {
-	Key    int64 `json:"key"`
-	Cookie int32 `json:"cookie"`
-}
-
-// GetResponse response for http get req
-type GetResponse struct {
-	Ret    int      `json:"ret"`
-	Vid    int32    `json:"vid"`
-	Stores []string `json:"stores"`
-}
-
-// UploadResponse response for http upload req
-type UploadResponse struct {
-	Ret    int         `json:"ret"`
-	Keys   []KeyCookie `json:"keys"`
-	Vid    int32       `json:"vid"`
-	Stores []string    `json:"stores"`
-}
-
-// DelResponse response for http del req
-type DelResponse struct {
-	Ret    int      `json:"ret"`
-	Vid    int32    `json:"vid"`
-	Stores []string `json:"stores"`
-}
-
 // HttpGetWriter
-func HttpGetWriter(r *http.Request, wr http.ResponseWriter, start time.Time, res *GetResponse) {
+func HttpGetWriter(r *http.Request, wr http.ResponseWriter, start time.Time, res *meta.Response) {
 	var (
 		err      error
 		byteJson []byte
@@ -56,7 +29,7 @@ func HttpGetWriter(r *http.Request, wr http.ResponseWriter, start time.Time, res
 }
 
 // HttpUploadWriter
-func HttpUploadWriter(r *http.Request, wr http.ResponseWriter, start time.Time, res *UploadResponse) {
+func HttpUploadWriter(r *http.Request, wr http.ResponseWriter, start time.Time, res *meta.Response) {
 	var (
 		err      error
 		byteJson []byte
@@ -76,7 +49,7 @@ func HttpUploadWriter(r *http.Request, wr http.ResponseWriter, start time.Time, 
 }
 
 // HttpDelWriter
-func HttpDelWriter(r *http.Request, wr http.ResponseWriter, start time.Time, res *DelResponse) {
+func HttpDelWriter(r *http.Request, wr http.ResponseWriter, start time.Time, res *meta.Response) {
 	var (
 		err      error
 		byteJson []byte

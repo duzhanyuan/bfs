@@ -1,12 +1,13 @@
 package meta
 
 import (
+	"bfs/libs/errors"
 	"encoding/json"
 	"fmt"
-	"github.com/Terry-Mao/bfs/libs/errors"
 	log "github.com/golang/glog"
 	"io/ioutil"
 	"net/http"
+	"time"
 )
 
 const (
@@ -22,8 +23,18 @@ const (
 	StoreStatusHealth = StoreStatusRead | StoreStatusWrite
 	StoreStatusFail   = StoreStatusEnable
 	// api
-	statAPI = "http://%s/info"
-	getAPI  = "http://%s/get?key=%d&cookie=%d&vid=%d"
+	statAPI  = "http://%s/info"
+	getAPI   = "http://%s/get?key=%d&cookie=%d&vid=%d"
+	probeAPI = "http://%s/probe?vid=%d"
+)
+
+var (
+	_client = &http.Client{
+		Transport: &http.Transport{
+			DisableCompression: true,
+		},
+		Timeout: 2 * time.Second,
+	}
 )
 
 type StoreList []*Store
@@ -50,6 +61,19 @@ type Store struct {
 	Status int    `json:"status"`
 }
 
+func (s *Store) String() string {
+	return fmt.Sprintf(`	
+-----------------------------
+Id:     %s
+Stat:   %s
+Admin:  %s
+Api:    %s
+Rack:   %s
+Status: %d
+-----------------------------
+`, s.Id, s.Stat, s.Admin, s.Api, s.Rack, s.Status)
+}
+
 // statAPI get stat http api.
 func (s *Store) statAPI() string {
 	return fmt.Sprintf(statAPI, s.Stat)
@@ -60,16 +84,26 @@ func (s *Store) getAPI(n *Needle, vid int32) string {
 	return fmt.Sprintf(getAPI, s.Stat, n.Key, n.Cookie, vid)
 }
 
+// probeApi probe store
+func (s *Store) probeAPI(vid int32) string {
+	return fmt.Sprintf(probeAPI, s.Admin, vid)
+}
+
 // Info get store volumes info.
 func (s *Store) Info() (vs []*Volume, err error) {
 	var (
-		body     []byte
-		resp     *http.Response
-		dataJson InfoVolume
-		url      = s.statAPI()
+		body []byte
+		req  *http.Request
+		resp *http.Response
+		data = new(Volumes)
+		url  = s.statAPI()
 	)
-	if resp, err = http.Get(url); err != nil {
-		log.Warningf("http.Get(\"%s\") error(%v)", url, err)
+	if req, err = http.NewRequest("GET", url, nil); err != nil {
+		log.Info("http.NewRequest(GET,%s) error(%v)", url, err)
+		return
+	}
+	if resp, err = _client.Do(req); err != nil {
+		log.Errorf("_client.do(%s) error(%v)", url, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -81,24 +115,31 @@ func (s *Store) Info() (vs []*Volume, err error) {
 		log.Errorf("ioutil.ReadAll() error(%v)", err)
 		return
 	}
-	if err = json.Unmarshal(body, &dataJson); err != nil {
+	if err = json.Unmarshal(body, &data); err != nil {
 		log.Errorf("json.Unmarshal() error(%v)", err)
 		return
 	}
-	vs = dataJson.Volumes
+	vs = data.Volumes
 	return
 }
 
 // Head send a head request to store.
-func (s *Store) Head(n *Needle, vid int32) (err error) {
+func (s *Store) Head(vid int32) (err error) {
 	var (
+		req  *http.Request
 		resp *http.Response
 		url  string
 	)
-	url = s.getAPI(n, vid)
-	if resp, err = http.Head(url); err != nil {
+	url = s.probeAPI(vid)
+	if req, err = http.NewRequest("HEAD", url, nil); err != nil {
+		log.Info("http.NewRequest(GET,%s) error(%v)", url, err)
 		return
 	}
+	if resp, err = _client.Do(req); err != nil {
+		log.Errorf("_client.do(%s) error(%v)", url, err)
+		return
+	}
+	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusInternalServerError {
 		err = errors.ErrInternal
 	}

@@ -1,8 +1,8 @@
 package hbase
 
 import (
+	"bfs/libs/meta"
 	"fmt"
-	"github.com/Terry-Mao/bfs/libs/meta"
 	"testing"
 	"time"
 )

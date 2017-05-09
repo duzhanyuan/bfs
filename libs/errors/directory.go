@@ -2,22 +2,22 @@ package errors
 
 const (
 	// hbase
-	RetHbase      = 30100
+	RetHBase = 30100
 	// id
-	RetIdNotAvailable   = 30200
+	RetIdNotAvailable = 30200
 	// store
 	RetStoreNotAvailable = 30300
-	// zookeeper 
+	// zookeeper
 	RetZookeeperDataError = 30400
 )
 
 var (
 	// hbase
-	ErrHbase      = Error(RetHbase)
+	ErrHBase = Error(RetHBase)
 	// id
-	ErrIdNotAvailable        = Error(RetIdNotAvailable)
+	ErrIdNotAvailable = Error(RetIdNotAvailable)
 	// store
-	ErrStoreNotAvailable    = Error(RetStoreNotAvailable)
+	ErrStoreNotAvailable = Error(RetStoreNotAvailable)
 	// zookeeper
-	ErrZookeeperDataError  = Error(RetZookeeperDataError)
+	ErrZookeeperDataError = Error(RetZookeeperDataError)
 )

@@ -1,20 +1,33 @@
 package block
 
 import (
+	"bfs/store/conf"
+	"bfs/store/needle"
 	"bytes"
 	"fmt"
-	"github.com/Terry-Mao/bfs/store/needle"
 	"os"
 	"testing"
+)
+
+var (
+	testConf = &conf.Config{
+		NeedleMaxSize: 4 * 1024 * 1024,
+		BlockMaxSize:  needle.Size(4 * 1024 * 1024),
+		Block: &conf.Block{
+			BufferSize:    4 * 1024 * 1024,
+			SyncWrite:     1024,
+			Syncfilerange: true,
+		},
+	}
 )
 
 func TestSuperBlock(t *testing.T) {
 	var (
 		b                  *SuperBlock
+		n                  *needle.Needle
 		offset, v2, v3, v4 uint32
 		err                error
-		buf                = make([]byte, 40)
-		n                  = &needle.Needle{}
+		buf                = &bytes.Buffer{}
 		needles            = make(map[int64]int64)
 		data               = []byte("test")
 		file               = "../test/test.block"
@@ -26,21 +39,13 @@ func TestSuperBlock(t *testing.T) {
 	defer os.Remove(file)
 	defer os.Remove(ifile)
 	// test new block file
-	if b, err = NewSuperBlock(file, Options{
-		BufferSize:    4 * 1024 * 1024,
-		SyncAtWrite:   1024,
-		Syncfilerange: true,
-	}); err != nil {
+	if b, err = NewSuperBlock(file, testConf); err != nil {
 		t.Errorf("NewSuperBlock(\"%s\") error(%v)", file, err)
 		t.FailNow()
 	}
 	b.Close()
 	// test parse block file
-	if b, err = NewSuperBlock(file, Options{
-		BufferSize:    4 * 1024 * 1024,
-		SyncAtWrite:   1024,
-		Syncfilerange: true,
-	}); err != nil {
+	if b, err = NewSuperBlock(file, testConf); err != nil {
 		t.Errorf("NewSuperBlock(\"%s\") error(%v)", file, err)
 		t.FailNow()
 	}
@@ -52,32 +57,43 @@ func TestSuperBlock(t *testing.T) {
 	}
 	defer b.Close()
 	// test write
-	n.Init(1, 1, data)
-	n.Write(buf)
-	if err = b.Write(buf); err != nil {
-		t.Errorf("Write() error(%v)", err)
+	if _, err = buf.Write(data); err != nil {
+		t.Errorf("buf.Write() error(%v)", err)
 		t.FailNow()
 	}
-	if err = compareTestOffset(b, n, needle.NeedleOffset(int64(headerSize))); err != nil {
+	n = needle.NewWriter(1, 1, 4)
+	defer n.Close()
+	n.ReadFrom(buf)
+	if err = b.Write(n); err != nil {
+		t.Errorf("b.Write() error(%v)", err)
+		t.FailNow()
+	}
+	if err = compareTestOffset(b, n, needle.NeedleOffset(int64(_headerSize))); err != nil {
 		t.Errorf("compareTestOffset() error(%v)", err)
 		t.FailNow()
 	}
 	offset = b.Offset
 	v2 = b.Offset
 	// test get
-	if err = b.Get(1, buf); err != nil {
-		t.Errorf("Get() error(%v)", err)
+	n.Offset = 1
+	if err = b.ReadAt(n); err != nil {
+		t.Errorf("b.ReadAt() error(%v)", err)
 		t.FailNow()
 	}
-	if err = compareTestNeedle(t, 1, 1, needle.FlagOK, n, data, buf); err != nil {
+	if err = compareTestNeedle(t, 1, 1, needle.FlagOK, n, data); err != nil {
 		t.Errorf("compareTestNeedle() error(%v)", err)
 		t.FailNow()
 	}
 	// test write
-	n.Init(2, 2, data)
-	n.Write(buf)
-	if err = b.Write(buf); err != nil {
-		t.Errorf("Add() error(%v)", err)
+	if _, err = buf.Write(data); err != nil {
+		t.Errorf("buf.Write() error(%v)", err)
+		t.FailNow()
+	}
+	n = needle.NewWriter(2, 2, 4)
+	defer n.Close()
+	n.ReadFrom(buf)
+	if err = b.Write(n); err != nil {
+		t.Errorf("b.Write() error(%v)", err)
 		t.FailNow()
 	}
 	if err = compareTestOffset(b, n, offset); err != nil {
@@ -86,28 +102,39 @@ func TestSuperBlock(t *testing.T) {
 	}
 	offset = b.Offset
 	v3 = b.Offset
-	if err = b.Get(6, buf); err != nil {
-		t.Errorf("Get() error(%v)", err)
+	n.Offset = 6
+	if err = b.ReadAt(n); err != nil {
+		t.Errorf("b.ReadAt() error(%v)", err)
 		t.FailNow()
 	}
-	if err = compareTestNeedle(t, 2, 2, needle.FlagOK, n, data, buf); err != nil {
+	if err = compareTestNeedle(t, 2, 2, needle.FlagOK, n, data); err != nil {
 		t.Error("compareTestNeedle(2)")
 		t.FailNow()
 	}
 	// test write
-	n.Init(3, 3, data)
-	n.Write(buf)
-	if err = b.Write(buf); err != nil {
-		t.Errorf("Add() error(%v)", err)
+	if _, err = buf.Write(data); err != nil {
+		t.Errorf("buf.Write() error(%v)", err)
+		t.FailNow()
+	}
+	n = needle.NewWriter(3, 3, 4)
+	defer n.Close()
+	n.ReadFrom(buf)
+	if err = b.Write(n); err != nil {
+		t.Errorf("b.Write() error(%v)", err)
 		t.FailNow()
 	}
 	offset = b.Offset
 	v4 = b.Offset
 	// test write
-	n.Init(4, 4, data)
-	n.Write(buf)
-	if err = b.Write(buf); err != nil {
-		t.Errorf("Add() error(%v)", err)
+	if _, err = buf.Write(data); err != nil {
+		t.Errorf("buf.Write() error(%v)", err)
+		t.FailNow()
+	}
+	n = needle.NewWriter(4, 4, 4)
+	defer n.Close()
+	n.ReadFrom(buf)
+	if err = b.Write(n); err != nil {
+		t.Errorf("b.Write() error(%v)", err)
 		t.FailNow()
 	}
 	if err = b.flush(true); err != nil {
@@ -118,47 +145,52 @@ func TestSuperBlock(t *testing.T) {
 		t.Errorf("compareTestOffset() error(%v)", err)
 		t.FailNow()
 	}
-	if err = b.Get(11, buf); err != nil {
+	n.Offset = 11
+	if err = b.ReadAt(n); err != nil {
 		t.Errorf("Get() error(%v)", err)
 		t.FailNow()
 	}
-	if err = compareTestNeedle(t, 3, 3, needle.FlagOK, n, data, buf); err != nil {
+	if err = compareTestNeedle(t, 3, 3, needle.FlagOK, n, data); err != nil {
 		t.Error("compareTestNeedle(3)")
 		t.FailNow()
 	}
-	if err = b.Get(16, buf); err != nil {
+	n.Offset = 16
+	if err = b.ReadAt(n); err != nil {
 		t.Errorf("Get() error(%v)", err)
 		t.FailNow()
 	}
-	if err = compareTestNeedle(t, 4, 4, needle.FlagOK, n, data, buf); err != nil {
+	if err = compareTestNeedle(t, 4, 4, needle.FlagOK, n, data); err != nil {
 		t.Error("compareTestNeedle(r)")
 		t.FailNow()
 	}
 	// test del, del first needles
-	if err = b.Del(1); err != nil {
+	if err = b.Delete(1); err != nil {
 		t.Errorf("Del() error(%v)", err)
 		t.FailNow()
 	}
 	// test get
-	if err = b.Get(1, buf); err != nil {
+	n.Offset = 1
+	if err = b.ReadAt(n); err != nil {
 		t.Errorf("Get() error(%v)", err)
 		t.FailNow()
 	}
-	if err = compareTestNeedle(t, 1, 1, needle.FlagDel, n, data, buf); err != nil {
+	if err = compareTestNeedle(t, 1, 1, needle.FlagDel, n, data); err != nil {
 		t.FailNow()
 	}
-	if err = b.Get(11, buf); err != nil {
+	n.Offset = 11
+	if err = b.ReadAt(n); err != nil {
 		t.Errorf("Get() error(%v)", err)
 		t.FailNow()
 	}
-	if err = compareTestNeedle(t, 3, 3, needle.FlagOK, n, data, buf); err != nil {
+	if err = compareTestNeedle(t, 3, 3, needle.FlagOK, n, data); err != nil {
 		t.FailNow()
 	}
-	if err = b.Get(16, buf); err != nil {
+	n.Offset = 16
+	if err = b.ReadAt(n); err != nil {
 		t.Errorf("b.Get() error(%v)", err)
 		t.FailNow()
 	}
-	if err = compareTestNeedle(t, 4, 4, needle.FlagOK, n, data, buf); err != nil {
+	if err = compareTestNeedle(t, 4, 4, needle.FlagOK, n, data); err != nil {
 		t.FailNow()
 	}
 	// test recovery
@@ -223,17 +255,23 @@ func TestSuperBlock(t *testing.T) {
 		t.FailNow()
 	}
 	// test repair
-	n.Init(3, 3, data)
-	n.Write(buf)
-	if err = b.Repair(v3, buf); err != nil {
+	if _, err = buf.Write(data); err != nil {
+		t.Errorf("buf.Write() error(%v)", err)
+		t.FailNow()
+	}
+	n = needle.NewWriter(3, 3, 4)
+	defer n.Close()
+	n.ReadFrom(buf)
+	if err = b.WriteAt(v3, n); err != nil {
 		t.Errorf("b.Repair(3) error(%v)", err)
 		t.FailNow()
 	}
-	if err = b.Get(v3, buf); err != nil {
+	n.Offset = v3
+	if err = b.ReadAt(n); err != nil {
 		t.Errorf("b.Get() error(%v)", err)
 		t.FailNow()
 	}
-	if err = compareTestNeedle(t, 3, 3, needle.FlagOK, n, data, buf); err != nil {
+	if err = compareTestNeedle(t, 3, 3, needle.FlagOK, n, data); err != nil {
 		t.Error("compareTestNeedle(3)")
 		t.FailNow()
 	}
@@ -267,16 +305,7 @@ func TestSuperBlock(t *testing.T) {
 	}
 }
 
-func compareTestNeedle(t *testing.T, key int64, cookie int32, flag byte, n *needle.Needle, data, buf []byte) (err error) {
-	if err = n.ParseHeader(buf[:needle.HeaderSize]); err != nil {
-		t.Errorf("ParseNeedleHeader() error(%v)", err)
-		return
-	}
-	if err = n.ParseFooter(buf[needle.HeaderSize:]); err != nil {
-		err = fmt.Errorf("ParseNeedleData() error(%v)", err)
-		t.Error(err)
-		return
-	}
+func compareTestNeedle(t *testing.T, key int64, cookie int32, flag byte, n *needle.Needle, data []byte) (err error) {
 	if !bytes.Equal(n.Data, data) {
 		err = fmt.Errorf("data: %s not match", n.Data)
 		t.Error(err)
@@ -308,7 +337,7 @@ func compareTestNeedle(t *testing.T, key int64, cookie int32, flag byte, n *need
 func compareTestOffset(b *SuperBlock, n *needle.Needle, offset uint32) (err error) {
 	var v int64
 	if b.Offset != offset+needle.NeedleOffset(int64(n.TotalSize)) {
-		err = fmt.Errorf("b.Offset: %d not match", b.Offset)
+		err = fmt.Errorf("b.Offset: %d not match %d", b.Offset, offset)
 		return
 	}
 	if v, err = b.w.Seek(0, os.SEEK_CUR); err != nil {

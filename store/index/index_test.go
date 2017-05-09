@@ -1,11 +1,27 @@
 package index
 
 import (
-	"github.com/Terry-Mao/bfs/libs/errors"
-	"github.com/Terry-Mao/bfs/store/needle"
+	"bfs/libs/errors"
+	"bfs/store/conf"
+	"bfs/store/needle"
 	"os"
 	"testing"
 	"time"
+)
+
+var (
+	testConf = &conf.Config{
+		NeedleMaxSize: 4 * 1024 * 1024,
+		BlockMaxSize:  needle.Size(4 * 1024 * 1024),
+		Index: &conf.Index{
+			BufferSize:    4 * 1024 * 1024,
+			MergeDelay:    conf.Duration{10 * time.Second},
+			MergeWrite:    5,
+			RingBuffer:    10,
+			SyncWrite:     10,
+			Syncfilerange: true,
+		},
+	}
 )
 
 func TestIndex(t *testing.T) {
@@ -18,14 +34,7 @@ func TestIndex(t *testing.T) {
 	)
 	os.Remove(file)
 	defer os.Remove(file)
-	if i, err = NewIndexer(file, Options{
-		BufferSize:    4 * 1024 * 1024,
-		MergeAtTime:   10 * time.Second,
-		MergeAtWrite:  5,
-		RingBuffer:    10,
-		SyncAtWrite:   10,
-		Syncfilerange: true,
-	}); err != nil {
+	if i, err = NewIndexer(file, testConf); err != nil {
 		t.Errorf("NewIndexer() error(%v)", err)
 		t.FailNow()
 	}

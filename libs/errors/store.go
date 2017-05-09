@@ -29,6 +29,11 @@ const (
 	RetNeedleCookie      = 5009
 	RetNeedleDeleted     = 5010
 	RetNeedleTooLarge    = 5011
+	RetNeedleHeaderSize  = 5012
+	RetNeedleDataSize    = 5013
+	RetNeedleFooterSize  = 5014
+	RetNeedlePaddingSize = 5015
+	RetNeedleFull        = 5016
 	// ring
 	RetRingEmpty = 6000
 	RetRingFull  = 6001
@@ -47,6 +52,7 @@ const (
 
 var (
 	ErrUploadMaxFile = Error(RetUploadMaxFile)
+	ErrDelMaxFile    = Error(RetDelMaxFile)
 	// block
 	ErrSuperBlockMagic      = Error(RetSuperBlockMagic)
 	ErrSuperBlockVer        = Error(RetSuperBlockVer)
@@ -72,6 +78,11 @@ var (
 	ErrNeedleCookie      = Error(RetNeedleCookie)
 	ErrNeedleDeleted     = Error(RetNeedleDeleted)
 	ErrNeedleTooLarge    = Error(RetNeedleTooLarge)
+	ErrNeedleHeaderSize  = Error(RetNeedleHeaderSize)
+	ErrNeedleDataSize    = Error(RetNeedleDataSize)
+	ErrNeedleFooterSize  = Error(RetNeedleFooterSize)
+	ErrNeedlePaddingSize = Error(RetNeedlePaddingSize)
+	ErrNeedleFull        = Error(RetNeedleFull)
 	// ring
 	ErrRingEmpty = Error(RetRingEmpty)
 	ErrRingFull  = Error(RetRingFull)

@@ -1,175 +1,168 @@
 package main
 
 import (
-	"github.com/Terry-Mao/bfs/libs/errors"
+	"bfs/libs/errors"
+	"bfs/store/volume"
 	log "github.com/golang/glog"
 	"net/http"
 	"strconv"
 	"time"
 )
 
-// StartAdmin start admin http listen.
-func StartAdmin(addr string, s *Store) {
-	go func() {
-		var (
-			err      error
-			serveMux = http.NewServeMux()
-		)
-		serveMux.Handle("/bulk_volume", httpBulkVolumeHandler{s: s})
-		serveMux.Handle("/compact_volume", httpCompactVolumeHandler{s: s})
-		serveMux.Handle("/add_volume", httpAddVolumeHandler{s: s})
-		serveMux.Handle("/add_free_volume", httpAddFreeVolumeHandler{s: s})
-		if err = http.ListenAndServe(addr, serveMux); err != nil {
-			log.Errorf("http.ListenAndServe(\"%s\") error(%v)", addr, err)
-			return
+// startAdmin start admin http listen.
+func (s *Server) startAdmin() {
+	var (
+		err      error
+		serveMux = http.NewServeMux()
+		server   = &http.Server{
+			Addr:    s.conf.AdminListen,
+			Handler: serveMux,
+			// TODO read/write timeout
 		}
+	)
+	serveMux.HandleFunc("/probe", s.probe)
+	serveMux.HandleFunc("/bulk_volume", s.bulkVolume)
+	serveMux.HandleFunc("/compact_volume", s.compactVolume)
+	serveMux.HandleFunc("/add_volume", s.addVolume)
+	serveMux.HandleFunc("/add_free_volume", s.addFreeVolume)
+	if err = server.Serve(s.adminSvr); err != nil {
+		log.Errorf("server.Serve() error(%v)", err)
+	}
+	log.Info("http admin stop")
+	return
+}
+
+func (s *Server) probe(wr http.ResponseWriter, r *http.Request) {
+	var (
+		v      *volume.Volume
+		err    error
+		vid    int64
+		ret    = http.StatusOK
+		params = r.URL.Query()
+		now    = time.Now()
+	)
+	if r.Method != "HEAD" {
+		ret = http.StatusMethodNotAllowed
+		http.Error(wr, "method not allowed", ret)
+		return
+	}
+	defer HttpGetWriter(r, wr, now, &err, &ret)
+	if vid, err = strconv.ParseInt(params.Get("vid"), 10, 32); err != nil {
+		log.Errorf("strconv.ParseInt(\"%s\") error(%v)", params.Get("vid"), err)
+		ret = http.StatusBadRequest
+		return
+	}
+	if v = s.store.Volumes[int32(vid)]; v != nil {
+		if err = v.Probe(); err != nil {
+			if err == errors.ErrNeedleDeleted || err == errors.ErrNeedleNotExist {
+				ret = http.StatusNotFound
+			} else {
+				ret = http.StatusInternalServerError
+			}
+		}
+	} else {
+		ret = http.StatusNotFound
+		err = errors.ErrVolumeNotExist
+	}
+	return
+}
+
+func (s *Server) bulkVolume(wr http.ResponseWriter, r *http.Request) {
+	var (
+		err          error
+		vid          int64
+		bfile, ifile string
+		res          = map[string]interface{}{}
+	)
+	if r.Method != "POST" {
+		http.Error(wr, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	defer HttpPostWriter(r, wr, time.Now(), &err, res)
+	bfile = r.FormValue("bfile")
+	ifile = r.FormValue("ifile")
+	if vid, err = strconv.ParseInt(r.FormValue("vid"), 10, 32); err != nil {
+		log.Errorf("strconv.ParseInt(\"%s\") error(%v)", r.FormValue("vid"), err)
+		err = errors.ErrParam
+		return
+	}
+	go func() {
+		log.Infof("bulk volume: %d start", vid)
+		err = s.store.BulkVolume(int32(vid), bfile, ifile)
+		log.Infof("bulk volume: %d stop", vid)
 	}()
 	return
 }
 
-// httpBulkVolumeHandler http bulk block.
-type httpBulkVolumeHandler struct {
-	s *Store
-}
-
-func (h httpBulkVolumeHandler) ServeHTTP(wr http.ResponseWriter, r *http.Request) {
-	var (
-		ok           bool
-		err          error
-		uerr         errors.Error
-		vid          int64
-		bfile, ifile string
-		res          = map[string]interface{}{"ret": errors.RetOK}
-	)
-	if r.Method != "POST" {
-		http.Error(wr, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	defer HttpPostWriter(r, wr, time.Now(), res)
-	bfile = r.FormValue("bfile")
-	ifile = r.FormValue("ifile")
-	if vid, err = strconv.ParseInt(r.FormValue("vid"), 10, 32); err != nil {
-		log.Errorf("strconv.ParseInt(\"%s\") error(%v)", r.FormValue("vid"),
-			err)
-		res["ret"] = errors.RetParamErr
-		return
-	}
-	log.Infof("bulk volume: %d start", vid)
-	if err = h.s.BulkVolume(int32(vid), bfile, ifile); err != nil {
-		if uerr, ok = err.(errors.Error); ok {
-			res["ret"] = int(uerr)
-		} else {
-			res["ret"] = errors.RetInternalErr
-		}
-	}
-	log.Infof("bulk volume: %d stop", vid)
-	return
-}
-
-// httpCompactVolumeHandler http compact block.
-type httpCompactVolumeHandler struct {
-	s *Store
-}
-
-func (h httpCompactVolumeHandler) ServeHTTP(wr http.ResponseWriter, r *http.Request) {
+func (s *Server) compactVolume(wr http.ResponseWriter, r *http.Request) {
 	var (
 		err error
 		vid int64
-		res = map[string]interface{}{"ret": errors.RetOK}
+		res = map[string]interface{}{}
 	)
 	if r.Method != "POST" {
 		http.Error(wr, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	defer HttpPostWriter(r, wr, time.Now(), res)
+	defer HttpPostWriter(r, wr, time.Now(), &err, res)
 	if vid, err = strconv.ParseInt(r.FormValue("vid"), 10, 32); err != nil {
-		log.Errorf("strconv.ParseInt(\"%s\") error(%v)", r.FormValue("vid"),
-			err)
-		res["ret"] = errors.RetParamErr
+		log.Errorf("strconv.ParseInt(\"%s\") error(%v)", r.FormValue("vid"), err)
+		err = errors.ErrParam
 		return
 	}
 	// long time processing, not block, we can from info stat api get status.
 	go func() {
 		log.Infof("compact volume: %d start", vid)
-		if err = h.s.CompactVolume(int32(vid)); err != nil {
+		if err = s.store.CompactVolume(int32(vid)); err != nil {
 			log.Errorf("s.CompactVolume() error(%v)", err)
 		}
 		log.Infof("compact volume: %d stop", vid)
 	}()
-	res["ret"] = errors.RetOK
 	return
 }
 
-// httpAddVolumeHandler http compact block.
-type httpAddVolumeHandler struct {
-	s *Store
-}
-
-func (h httpAddVolumeHandler) ServeHTTP(wr http.ResponseWriter, r *http.Request) {
+func (s *Server) addVolume(wr http.ResponseWriter, r *http.Request) {
 	var (
-		ok   bool
-		err  error
-		uerr errors.Error
-		vid  int64
-		res  = map[string]interface{}{"ret": errors.RetOK}
+		err error
+		vid int64
+		res = map[string]interface{}{}
 	)
 	if r.Method != "POST" {
 		http.Error(wr, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	defer HttpPostWriter(r, wr, time.Now(), res)
+	defer HttpPostWriter(r, wr, time.Now(), &err, res)
 	if vid, err = strconv.ParseInt(r.FormValue("vid"), 10, 32); err != nil {
-		log.Errorf("strconv.ParseInt(\"%s\") error(%v)", r.FormValue("vid"),
-			err)
-		res["ret"] = errors.RetParamErr
+		log.Errorf("strconv.ParseInt(\"%s\") error(%v)", r.FormValue("vid"), err)
+		err = errors.ErrParam
 		return
 	}
 	log.Infof("add volume: %d", vid)
-	if _, err = h.s.AddVolume(int32(vid)); err != nil {
-		if uerr, ok = err.(errors.Error); ok {
-			res["ret"] = int(uerr)
-		} else {
-			res["ret"] = errors.RetInternalErr
-		}
-	}
+	_, err = s.store.AddVolume(int32(vid))
 	return
 }
 
-// httpAddFreeVolumeHandler http compact block.
-type httpAddFreeVolumeHandler struct {
-	s *Store
-}
-
-func (h httpAddFreeVolumeHandler) ServeHTTP(wr http.ResponseWriter, r *http.Request) {
+func (s *Server) addFreeVolume(wr http.ResponseWriter, r *http.Request) {
 	var (
-		ok         bool
-		uerr       errors.Error
 		err        error
 		sn         int
 		n          int64
 		bdir, idir string
-		res        = map[string]interface{}{"ret": errors.RetOK}
+		res        = map[string]interface{}{}
 	)
 	if r.Method != "POST" {
 		http.Error(wr, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	defer HttpPostWriter(r, wr, time.Now(), res)
+	defer HttpPostWriter(r, wr, time.Now(), &err, res)
 	bdir, idir = r.FormValue("bdir"), r.FormValue("idir")
 	if n, err = strconv.ParseInt(r.FormValue("n"), 10, 32); err != nil {
-		log.Errorf("strconv.ParseInt(\"%s\") error(%v)", r.FormValue("vid"),
-			err)
-		res["ret"] = errors.RetParamErr
+		log.Errorf("strconv.ParseInt(\"%s\") error(%v)", r.FormValue("vid"), err)
+		err = errors.ErrParam
 		return
 	}
 	log.Infof("add free volume: %d", n)
-	if sn, err = h.s.AddFreeVolume(int(n), bdir, idir); err != nil {
-		if uerr, ok = err.(errors.Error); ok {
-			res["ret"] = int(uerr)
-		} else {
-			res["ret"] = errors.RetInternalErr
-		}
-	}
+	sn, err = s.store.AddFreeVolume(int(n), bdir, idir)
 	res["succeed"] = sn
 	return
 }

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bfs/directory/conf"
+	"bfs/directory/hbase"
+	"bfs/directory/snowflake"
+	myzk "bfs/directory/zk"
+	"bfs/libs/errors"
+	"bfs/libs/meta"
 	"encoding/json"
-	"github.com/Terry-Mao/bfs/directory/hbase"
-	"github.com/Terry-Mao/bfs/directory/snowflake"
-	"github.com/Terry-Mao/bfs/libs/errors"
-	"github.com/Terry-Mao/bfs/libs/meta"
 	log "github.com/golang/glog"
 	"github.com/samuel/go-zookeeper/zk"
 	"strconv"
@@ -32,25 +34,27 @@ type Directory struct {
 	volumeStore map[int32][]string          // volume_id:store_server_id
 
 	genkey     *snowflake.Genkey  // snowflake client for gen key
-	hbase      *hbase.HBaseClient // hbase client
+	hBase      *hbase.HBaseClient // hBase client
 	dispatcher *Dispatcher        // dispatch for write or read reqs
 
-	config *Config
-	zk     *Zookeeper
+	config *conf.Config
+	zk     *myzk.Zookeeper
 }
 
 // NewDirectory
-func NewDirectory(config *Config, zk *Zookeeper) (d *Directory, err error) {
+func NewDirectory(config *conf.Config) (d *Directory, err error) {
 	d = &Directory{}
 	d.config = config
-	d.zk = zk
-	if d.genkey, err = snowflake.NewGenkey(config.SnowflakeZkAddrs, config.SnowflakeZkPath, config.SnowflakeZkTimeout, config.SnowflakeWorkId); err != nil {
+	if d.zk, err = myzk.NewZookeeper(config); err != nil {
 		return
 	}
-	if err = hbase.Init(config.HbaseAddr, config.HbaseTimeout, config.HbaseMaxIdle, config.HbaseMaxActive); err != nil {
+	if d.genkey, err = snowflake.NewGenkey(config.Snowflake.ZkAddrs, config.Snowflake.ZkPath, config.Snowflake.ZkTimeout.Duration, config.Snowflake.WorkId); err != nil {
 		return
 	}
-	d.hbase = hbase.NewHBaseClient()
+	if err = hbase.Init(config); err != nil {
+		return
+	}
+	d.hBase = hbase.NewHBaseClient()
 	d.dispatcher = NewDispatcher()
 	go d.SyncZookeeper()
 	return
@@ -216,7 +220,7 @@ func (d *Directory) SyncZookeeper() {
 		case <-sev:
 			log.Infof("stores status change or new store")
 			break
-		case <-time.After(d.config.PullInterval):
+		case <-time.After(d.config.Zookeeper.PullInterval.Duration):
 			log.Infof("pull from zk")
 			break
 		}
@@ -229,28 +233,24 @@ func (d *Directory) cookie() (cookie int32) {
 }
 
 // GetStores get readable stores for http get
-func (d *Directory) GetStores(key int64, cookie int32) (vid int32, stores []string, err error) {
+func (d *Directory) GetStores(bucket, filename string) (n *meta.Needle, f *meta.File, stores []string, err error) {
 	var (
-		n         *meta.Needle
 		store     string
 		svrs      []string
 		storeMeta *meta.Store
 		ok        bool
 	)
-	if n, err = d.hbase.Get(key); err != nil {
-		log.Errorf("hbase.Get error(%v)", err)
-		err = errors.ErrHbase
+	if n, f, err = d.hBase.Get(bucket, filename); err != nil {
+		log.Errorf("hBase.Get error(%v)", err)
+		if err != errors.ErrNeedleNotExist {
+			err = errors.ErrHBase
+		}
 		return
 	}
 	if n == nil {
 		err = errors.ErrNeedleNotExist
 		return
 	}
-	if n.Cookie != cookie {
-		err = errors.ErrNeedleCookie
-		return
-	}
-	vid = n.Vid
 	if svrs, ok = d.volumeStore[n.Vid]; !ok {
 		err = errors.ErrZookeeperDataError
 		return
@@ -273,21 +273,15 @@ func (d *Directory) GetStores(key int64, cookie int32) (vid int32, stores []stri
 }
 
 // UploadStores get writable stores for http upload
-func (d *Directory) UploadStores(numKeys int) (keys []KeyCookie, vid int32, stores []string, err error) {
+func (d *Directory) UploadStores(bucket string, f *meta.File) (n *meta.Needle, stores []string, err error) {
 	var (
-		i         int
 		key       int64
-		kc        KeyCookie
-		n         meta.Needle
+		vid       int32
 		svrs      []string
 		store     string
 		storeMeta *meta.Store
 		ok        bool
 	)
-	if numKeys > d.config.MaxNum {
-		err = errors.ErrUploadMaxFile
-		return
-	}
 	if vid, err = d.dispatcher.VolumeId(d.group, d.storeVolume); err != nil {
 		log.Errorf("dispatcher.VolumeId error(%v)", err)
 		err = errors.ErrStoreNotAvailable
@@ -302,52 +296,45 @@ func (d *Directory) UploadStores(numKeys int) (keys []KeyCookie, vid int32, stor
 		}
 		stores = append(stores, storeMeta.Api)
 	}
-	keys = make([]KeyCookie, numKeys)
-	for i = 0; i < numKeys; i++ {
-		if key, err = d.genkey.Getkey(); err != nil {
-			log.Errorf("genkey.Getkey() error(%v)", err)
-			err = errors.ErrIdNotAvailable
-			return
-		}
-		keys[i].Key = key
-		keys[i].Cookie = d.cookie()
+	if key, err = d.genkey.Getkey(); err != nil {
+		log.Errorf("genkey.Getkey() error(%v)", err)
+		err = errors.ErrIdNotAvailable
+		return
 	}
-	for _, kc = range keys {
-		n.Key = kc.Key
-		n.Vid = vid
-		n.Cookie = kc.Cookie
-		if err = d.hbase.Put(&n); err != nil {
-			log.Errorf("hbase.Put error(%v)", err)
-			err = errors.ErrHbase
-			return //puted keys will be ignored
+
+	n = new(meta.Needle)
+	n.Key = key
+	n.Vid = vid
+	n.Cookie = d.cookie()
+	f.Key = key
+	if err = d.hBase.Put(bucket, f, n); err != nil {
+		if err != errors.ErrNeedleExist {
+			log.Errorf("hBase.Put error(%v)", err)
+			err = errors.ErrHBase
 		}
 	}
 	return
 }
 
 // DelStores get delable stores for http del
-func (d *Directory) DelStores(key int64, cookie int32) (vid int32, stores []string, err error) {
+func (d *Directory) DelStores(bucket, filename string) (n *meta.Needle, stores []string, err error) {
 	var (
-		n         *meta.Needle
 		ok        bool
 		store     string
 		svrs      []string
 		storeMeta *meta.Store
 	)
-	if n, err = d.hbase.Get(key); err != nil {
-		log.Errorf("hbase.Get error(%v)", err)
-		err = errors.ErrHbase
+	if n, _, err = d.hBase.Get(bucket, filename); err != nil {
+		log.Errorf("hBase.Get error(%v)", err)
+		if err != errors.ErrNeedleNotExist {
+			err = errors.ErrHBase
+		}
 		return
 	}
 	if n == nil {
 		err = errors.ErrNeedleNotExist
 		return
 	}
-	if n.Cookie != cookie {
-		err = errors.ErrNeedleCookie
-		return
-	}
-	vid = n.Vid
 	if svrs, ok = d.volumeStore[n.Vid]; !ok {
 		err = errors.ErrZookeeperDataError
 		return
@@ -364,9 +351,9 @@ func (d *Directory) DelStores(key int64, cookie int32) (vid int32, stores []stri
 		}
 		stores = append(stores, storeMeta.Api)
 	}
-	if err = d.hbase.Del(key); err != nil {
-		log.Errorf("hbase.Del error(%v)", err)
-		err = errors.ErrHbase
+	if err = d.hBase.Del(bucket, filename); err != nil {
+		log.Errorf("hBase.Del error(%v)", err)
+		err = errors.ErrHBase
 	}
 	return
 }

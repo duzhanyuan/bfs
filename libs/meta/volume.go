@@ -1,15 +1,14 @@
 package meta
 
-import "github.com/Terry-Mao/bfs/libs/stat"
+import "bfs/libs/stat"
 
 type Volume struct {
-	Id           int32       `json:"id"`
-	Block        *SuperBlock `json:"block"`
-	CheckNeedles []Needle    `json:"check_needles"`
-	Stats        *stat.Stats `json:"stats"`
+	Id    int32       `json:"id"`
+	Block *SuperBlock `json:"block"`
+	Stats *stat.Stats `json:"stats"`
 }
 
-type InfoVolume struct {
+type Volumes struct {
 	Volumes []*Volume `json:"volumes"`
 }
 

@@ -1,30 +1,31 @@
 package main
 
 import (
+	"bfs/pitchfork/conf"
+	myzk "bfs/store/zk"
+	"fmt"
 	"testing"
 	"time"
-	"fmt"
 )
-
 
 func TestPitchfork(t *testing.T) {
 
 	var (
-		config     *Config
-		zk         *Zookeeper
-		p          *Pitchfork
-		storelist  StoreList
-		store      *Store
+		config        *Config
+		zk            *Zookeeper
+		p             *Pitchfork
+		storelist     StoreList
+		store         *Store
 		pitchforklist PitchforkList
-		err        error
+		err           error
 	)
 
-	if config, err = NewConfig(configFile); err != nil {
+	if config, err = conf.NewConfig(configFile); err != nil {
 		t.Errorf("NewConfig(\"%s\") error(%v)", configFile, err)
 		return
 	}
 
-	if zk, err = NewZookeeper([]string{"localhost:2181"}, time.Second*1); err != nil {
+	if zk, err = myzk.NewZookeeper([]string{"localhost:2181"}, time.Second*1); err != nil {
 		t.Errorf("NewZookeeper() error(%v)", err)
 		t.FailNow()
 	}
@@ -44,20 +45,20 @@ func TestPitchfork(t *testing.T) {
 		fmt.Println(store.rack, store.ID, store.host, store.status)
 	}
 
-    pitchforklist, _, err = p.WatchGetPitchforks()
-    if err != nil {
-	t.Errorf("pitchfork WatchGetPitchforks() failed, Quit now")
-	t.FailNow()
-    }
-    for _, p  = range pitchforklist {
-	fmt.Println(p.ID)
-    }
-
-    for _, store = range storelist {
-	if err = p.getStore(store); err != nil {
-		t.Errorf("probeStore() called error(%v)", err)
+	pitchforklist, _, err = p.WatchGetPitchforks()
+	if err != nil {
+		t.Errorf("pitchfork WatchGetPitchforks() failed, Quit now")
 		t.FailNow()
 	}
-    }
+	for _, p = range pitchforklist {
+		fmt.Println(p.ID)
+	}
+
+	for _, store = range storelist {
+		if err = p.getStore(store); err != nil {
+			t.Errorf("probeStore() called error(%v)", err)
+			t.FailNow()
+		}
+	}
 
 }
